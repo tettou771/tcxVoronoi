@@ -1,6 +1,9 @@
 #include "tcxVoronoiSlice.h"
 
+#include <earcut/earcut.hpp>
+
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -62,6 +65,99 @@ SliceMesh toSliceMesh(const Mesh& m, float weldEps) {
         }
     }
     return out;
+}
+
+// -----------------------------------------------------------------------------
+// capTriangulate - triangulate the cut cross-section (one or more coplanar
+// loops) and append the cap triangles to 'out'.
+//
+// Handles concave cross-sections and holes: loops are projected to the plane's
+// 2D basis, classified outer/hole by even-odd containment depth, and each filled
+// loop (with its immediate holes) is triangulated with earcut. Each output
+// triangle is oriented so its normal points toward +plane.normal (outward of the
+// kept solid, which lives on the -normal side).
+// -----------------------------------------------------------------------------
+static void capTriangulate(SliceMesh& out,
+                           const vector<vector<unsigned int>>& loops,
+                           const Vec3& n) {
+    const size_t L = loops.size();
+    if (L == 0) return;
+
+    // Plane basis (u, v) spanning the cut plane.
+    Vec3 u = (fabs(n.x) > 0.9f) ? Vec3(0, 1, 0) : Vec3(1, 0, 0);
+    u = (u - n * u.dot(n)).normalized();
+    Vec3 v = n.cross(u);
+
+    auto project = [&](unsigned int idx) -> array<double, 2> {
+        const Vec3& p = out.verts[idx];
+        return {static_cast<double>(p.dot(u)), static_cast<double>(p.dot(v))};
+    };
+
+    // 2D projection of every loop.
+    vector<vector<array<double, 2>>> loop2d(L);
+    for (size_t i = 0; i < L; ++i) {
+        loop2d[i].reserve(loops[i].size());
+        for (unsigned int idx : loops[i]) loop2d[i].push_back(project(idx));
+    }
+
+    // Point-in-polygon (ray cast) test in 2D.
+    auto inside = [](const array<double, 2>& pt, const vector<array<double, 2>>& poly) -> bool {
+        bool c = false;
+        size_t m = poly.size();
+        for (size_t i = 0, j = m - 1; i < m; j = i++) {
+            double xi = poly[i][0], yi = poly[i][1];
+            double xj = poly[j][0], yj = poly[j][1];
+            if (((yi > pt[1]) != (yj > pt[1])) &&
+                (pt[0] < (xj - xi) * (pt[1] - yi) / (yj - yi) + xi)) {
+                c = !c;
+            }
+        }
+        return c;
+    };
+
+    // contains[a][b] = loop a strictly contains loop b (test b's first point).
+    vector<int> depth(L, 0);
+    vector<vector<bool>> contains(L, vector<bool>(L, false));
+    for (size_t a = 0; a < L; ++a) {
+        for (size_t b = 0; b < L; ++b) {
+            if (a == b || loop2d[b].empty()) continue;
+            if (inside(loop2d[b][0], loop2d[a])) {
+                contains[a][b] = true;
+                depth[b]++;
+            }
+        }
+    }
+
+    // Even depth -> filled (outer); odd depth -> hole. Each hole attaches to the
+    // innermost filled loop that contains it (depth == hole.depth - 1).
+    for (size_t f = 0; f < L; ++f) {
+        if (depth[f] % 2 != 0) continue;  // holes are emitted with their parent
+
+        vector<size_t> rings;
+        rings.push_back(f);
+        for (size_t h = 0; h < L; ++h) {
+            if (depth[h] == depth[f] + 1 && contains[f][h]) rings.push_back(h);
+        }
+
+        // Assemble the earcut polygon and a flat index map (ring order).
+        vector<vector<array<double, 2>>> poly;
+        vector<unsigned int> flat;
+        for (size_t r : rings) {
+            poly.push_back(loop2d[r]);
+            for (unsigned int idx : loops[r]) flat.push_back(idx);
+        }
+
+        vector<uint32_t> tri = mapbox::earcut<uint32_t>(poly);
+        for (size_t k = 0; k + 2 < tri.size(); k += 3) {
+            unsigned int a = flat[tri[k]], b = flat[tri[k + 1]], c = flat[tri[k + 2]];
+            Vec3 fn = (out.verts[b] - out.verts[a]).cross(out.verts[c] - out.verts[a]);
+            if (fn.dot(n) >= 0.0f) {
+                out.tris.push_back(a); out.tris.push_back(b); out.tris.push_back(c);
+            } else {
+                out.tris.push_back(a); out.tris.push_back(c); out.tris.push_back(b);
+            }
+        }
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -162,13 +258,15 @@ SliceMesh sliceKeepInside(const SliceMesh& in, const Plane& plane, float eps) {
     }
 
     unordered_map<unsigned int, bool> used;
-    const Vec3 n = plane.normal;
 
+    // Stitch the (degree-2) cut graph into closed loops. Multiple disjoint loops
+    // and holes are possible for concave cross-sections; capTriangulate sorts
+    // out which are outer vs holes.
+    vector<vector<unsigned int>> loops;
     for (auto& kv : adj) {
         unsigned int start = kv.first;
         if (used[start]) continue;
 
-        // Walk the (degree-2) cycle starting at 'start'.
         vector<unsigned int> loop;
         unsigned int cur = start;
         unsigned int prev = numeric_limits<unsigned int>::max();
@@ -186,24 +284,10 @@ SliceMesh sliceKeepInside(const SliceMesh& in, const Plane& plane, float eps) {
             cur = next;
         }
 
-        if (loop.size() < 3) continue;
-
-        // Fan triangulate the loop (Phase 1: convex caps). Orient each triangle
-        // so its normal points toward +plane.normal (outward of the kept solid).
-        for (size_t k = 1; k + 1 < loop.size(); ++k) {
-            unsigned int a = loop[0], b = loop[k], c = loop[k + 1];
-            Vec3 fn = (out.verts[b] - out.verts[a]).cross(out.verts[c] - out.verts[a]);
-            if (fn.dot(n) >= 0.0f) {
-                out.tris.push_back(a);
-                out.tris.push_back(b);
-                out.tris.push_back(c);
-            } else {
-                out.tris.push_back(a);
-                out.tris.push_back(c);
-                out.tris.push_back(b);
-            }
-        }
+        if (loop.size() >= 3) loops.push_back(std::move(loop));
     }
+
+    capTriangulate(out, loops, plane.normal);
 
     return out;
 }
