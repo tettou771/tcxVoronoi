@@ -84,4 +84,43 @@ struct FractureResult {
     }
 };
 
+// =============================================================================
+// 2D counterparts. Same shape as the 3D types (symmetry); the payload differs:
+// a cell carries a Path instead of a Mesh, and an interface is a shared edge
+// (point + normal) rather than a shared face.
+// =============================================================================
+struct VoronoiCell2D {
+    tc::Path path;                 // the cell polygon (closed)
+    tc::Vec2 seed;
+    tc::Vec2 centroid;
+    std::vector<int> neighbors;
+};
+
+struct Interface2D {
+    int cellA = -1;
+    int cellB = -1;
+    tc::Vec2 point;   // representative contact point (midpoint of the shared edge)
+    tc::Vec2 normal;  // bisector normal, oriented from cellA toward cellB
+};
+
+struct FractureResult2D {
+    std::vector<VoronoiCell2D> cells;
+    std::vector<Interface2D> interfaces;
+
+    std::vector<int> neighborsOf(int cell) const {
+        if (cell < 0 || cell >= static_cast<int>(cells.size())) return {};
+        return cells[cell].neighbors;
+    }
+
+    const Interface2D* interfaceBetween(int a, int b) const {
+        for (const Interface2D& it : interfaces) {
+            if ((it.cellA == a && it.cellB == b) ||
+                (it.cellA == b && it.cellB == a)) {
+                return &it;
+            }
+        }
+        return nullptr;
+    }
+};
+
 } // namespace tcx

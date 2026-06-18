@@ -174,6 +174,197 @@ FractureResult Voronoi::fracture(const Mesh& mesh) {
     return result;
 }
 
+// =============================================================================
+// 2D fracture
+// =============================================================================
+namespace {
+
+struct Line2 {
+    Vec2 normal;
+    float d;
+    float sd(const Vec2& p) const { return normal.dot(p) + d; }
+    // Perpendicular bisector; sd < 0 on a's side.
+    static Line2 bisector(const Vec2& a, const Vec2& b) {
+        Vec2 n = (b - a).normalized();
+        Vec2 m = (a + b) * 0.5f;
+        return {n, -n.dot(m)};
+    }
+};
+
+// Clip a polygon by a half-plane, keeping sd <= eps (one Sutherland-Hodgman
+// edge step). Handles concave subjects.
+vector<Vec2> clipByHalfPlane(const vector<Vec2>& poly, const Line2& ln, float eps) {
+    vector<Vec2> out;
+    size_t m = poly.size();
+    if (m < 2) return out;
+    for (size_t i = 0; i < m; ++i) {
+        const Vec2& cur = poly[i];
+        const Vec2& nxt = poly[(i + 1) % m];
+        float dc = ln.sd(cur), dn = ln.sd(nxt);
+        if (dc <= eps) out.push_back(cur);
+        bool crossing = (dc > eps && dn < -eps) || (dc < -eps && dn > eps);
+        if (crossing) {
+            float t = dc / (dc - dn);
+            out.push_back(cur.lerp(nxt, t));
+        }
+    }
+    return out;
+}
+
+bool pointInPoly(const Vec2& pt, const vector<Vec2>& poly) {
+    bool c = false;
+    size_t m = poly.size();
+    for (size_t i = 0, j = m - 1; i < m; j = i++) {
+        if (((poly[i].y > pt.y) != (poly[j].y > pt.y)) &&
+            (pt.x < (poly[j].x - poly[i].x) * (pt.y - poly[i].y) /
+                        (poly[j].y - poly[i].y) + poly[i].x)) {
+            c = !c;
+        }
+    }
+    return c;
+}
+
+} // namespace
+
+vector<Vec2> Voronoi::resolveSeeds2D(const vector<Vec2>& region) {
+    vector<Vec2> result;
+    for (const Vec3& s : seeds_) result.push_back(Vec2(s.x, s.y));
+    if (explicitSeeds_) return result;
+
+    int target = max(seedCount_, static_cast<int>(result.size()));
+    if (target < 1) target = 1;
+
+    Vec2 mn = region[0], mx = region[0];
+    for (const Vec2& p : region) {
+        mn.x = min(mn.x, p.x); mn.y = min(mn.y, p.y);
+        mx.x = max(mx.x, p.x); mx.y = max(mx.y, p.y);
+    }
+    if (hasRandomSeed_) tc::randomSeed(randomSeed_);
+
+    // Rejection-sample inside the polygon so seeds land in the region.
+    int guard = 0, guardMax = target * 200 + 100;
+    while (static_cast<int>(result.size()) < target && guard < guardMax) {
+        ++guard;
+        Vec2 p(tc::random(mn.x, mx.x), tc::random(mn.y, mx.y));
+        if (pointInPoly(p, region)) result.push_back(p);
+    }
+    // Fallback for thin/degenerate polygons where rejection keeps missing.
+    while (static_cast<int>(result.size()) < target) {
+        result.push_back(Vec2(tc::random(mn.x, mx.x), tc::random(mn.y, mx.y)));
+    }
+    return result;
+}
+
+FractureResult2D Voronoi::fracture2D(const Path& region) {
+    FractureResult2D result;
+
+    // Outer boundary polygon (first subpath).
+    vector<Vec2> poly;
+    const vector<Vec3>& rv = region.getVertices();
+    if (region.getNumSubpaths() > 0) {
+        auto rng = region.getSubpathRange(0);
+        for (size_t i = rng.first; i < rng.second; ++i) poly.push_back(Vec2(rv[i].x, rv[i].y));
+    } else {
+        for (const Vec3& v : rv) poly.push_back(Vec2(v.x, v.y));
+    }
+    if (poly.size() < 3) return result;
+
+    vector<Vec2> seeds = resolveSeeds2D(poly);
+    const int n = static_cast<int>(seeds.size());
+    if (n == 0) return result;
+
+    Rect b = region.getBounds();
+    float diag = Vec2(b.width, b.height).length();
+    float eps = max(1e-5f, diag * 1e-6f);
+    float interfaceEps = diag * 1e-3f;
+
+    // First pass: clip the region by each bisector half-plane.
+    vector<vector<Vec2>> cellPolys(n);
+    for (int i = 0; i < n; ++i) {
+        vector<Vec2> cell = poly;
+        for (int j = 0; j < n && cell.size() >= 3; ++j) {
+            if (j == i) continue;
+            cell = clipByHalfPlane(cell, Line2::bisector(seeds[i], seeds[j]), eps);
+        }
+        cellPolys[i] = std::move(cell);
+    }
+
+    vector<int> seedToCell(n, -1);
+    int cellCount = 0;
+    for (int i = 0; i < n; ++i) {
+        if (cellPolys[i].size() >= 3) seedToCell[i] = cellCount++;
+    }
+
+    struct Acc { Vec2 sum{0, 0}; int count = 0; Vec2 normal{0, 0}; };
+    map<pair<int, int>, Acc> ifaceAcc;
+    vector<vector<bool>> neighborOf(n, vector<bool>());
+
+    // Second pass: classify edges -> neighbors + interfaces.
+    for (int i = 0; i < n; ++i) {
+        if (seedToCell[i] < 0) continue;
+        const vector<Vec2>& cell = cellPolys[i];
+        vector<bool>& isNeighbor = neighborOf[i];
+        isNeighbor.assign(n, false);
+        size_t m = cell.size();
+        for (size_t e = 0; e < m; ++e) {
+            Vec2 mid = (cell[e] + cell[(e + 1) % m]) * 0.5f;
+            float di = mid.distance(seeds[i]);
+            int bestJ = -1;
+            float bestErr = interfaceEps;
+            for (int j = 0; j < n; ++j) {
+                if (j == i || seedToCell[j] < 0) continue;
+                float err = fabs(mid.distance(seeds[j]) - di);
+                if (err < bestErr) { bestErr = err; bestJ = j; }
+            }
+            if (bestJ >= 0) {
+                isNeighbor[bestJ] = true;
+                int a = min(i, bestJ), bb = max(i, bestJ);
+                Acc& acc = ifaceAcc[{a, bb}];
+                acc.sum += mid;
+                acc.count++;
+                acc.normal = Line2::bisector(seeds[a], seeds[bb]).normal;
+            }
+        }
+    }
+
+    // Emit cells.
+    result.cells.reserve(cellCount);
+    for (int i = 0; i < n; ++i) {
+        if (seedToCell[i] < 0) continue;
+        VoronoiCell2D vc;
+        Path p(cellPolys[i]);
+        p.close();
+        vc.path = p;
+        vc.seed = seeds[i];
+        Vec2 c(0, 0);
+        for (const Vec2& q : cellPolys[i]) c += q;
+        vc.centroid = c * (1.0f / static_cast<float>(cellPolys[i].size()));
+        for (int j = 0; j < n; ++j) {
+            if (j < static_cast<int>(neighborOf[i].size()) && neighborOf[i][j] && seedToCell[j] >= 0) {
+                vc.neighbors.push_back(seedToCell[j]);
+            }
+        }
+        result.cells.push_back(std::move(vc));
+    }
+
+    // Emit interfaces.
+    for (auto& kv : ifaceAcc) {
+        int a = seedToCell[kv.first.first];
+        int bb = seedToCell[kv.first.second];
+        if (a < 0 || bb < 0) continue;
+        Interface2D it;
+        it.cellA = a;
+        it.cellB = bb;
+        it.point = kv.second.count > 0
+                       ? kv.second.sum * (1.0f / static_cast<float>(kv.second.count))
+                       : Vec2(0, 0);
+        it.normal = kv.second.normal;
+        result.interfaces.push_back(it);
+    }
+
+    return result;
+}
+
 // -----------------------------------------------------------------------------
 vector<Vec3> seedsOnSphere(const Vec3& center, float radius, int n) {
     vector<Vec3> out;
