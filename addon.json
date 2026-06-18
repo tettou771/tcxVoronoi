@@ -4,5 +4,6 @@
   "license": "MIT",
   "category": "algorithms",
   "keywords": ["voronoi", "fracture", "shatter", "mesh", "destruction", "geometry", "3d", "2d"],
-  "platforms": ["macos", "windows", "linux", "web"]
+  "platforms": ["macos", "windows", "linux", "web"],
+  "screenshot": "docs/preview-small.png"
 }
