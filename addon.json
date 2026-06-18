@@ -1,0 +1,8 @@
+{
+  "description": "Voronoi fracture of meshes and 2D paths (shatter / destruction effects)",
+  "author": "tettou771",
+  "license": "MIT",
+  "category": "algorithms",
+  "keywords": ["voronoi", "fracture", "shatter", "mesh", "destruction", "geometry", "3d", "2d"],
+  "platforms": ["macos", "windows", "linux", "web"]
+}
