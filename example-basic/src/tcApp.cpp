@@ -18,9 +18,28 @@ void tcApp::setup() {
 void tcApp::refracture() {
     Mesh box = createBox(220.0f);
 
+    // The Voronoi generator holds the fracture settings (chained setters) and
+    // can be reused across meshes. Here: N cells, reproducible RNG.
     Voronoi v;
     v.setSeedCount(cellCount_).setRandomSeed(seed_);
     fracture_ = v.fracture(box);
+
+    // ---- More control --------------------------------------------------------
+    //   v.addSeed({0, 100, 0})          // place your own seed(s) — e.g. an
+    //    .addSeeds(seedsOnSphere({0,0,0}, 80, 12))  // a ring of impact seeds
+    //    .setSeedCount(40)              // total cells; the rest are auto-filled
+    //    .setDistribution(Distribution::Uniform);   // Uniform (default) or Grid
+    //
+    //   v.setSeeds(myPoints);           // escape hatch: every seed yourself
+    //                                   // (replaces all, disables auto-fill)
+    //
+    // Seeds you add are always kept; setSeedCount() tops up the remainder.
+    //
+    // Result: fracture_.cells[i] has { mesh, seed, centroid, neighbors }.
+    //   fracture_.interfaces  : shared faces { cellA, cellB, point, normal }
+    //   fracture_.neighborsOf(i) / interfaceBetween(a, b)
+    //   (handy for spawning effects between pieces as they separate)
+    // --------------------------------------------------------------------------
 
     // One stable color per cell (spread around the hue wheel).
     cellColors_.clear();

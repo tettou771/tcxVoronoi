@@ -15,7 +15,31 @@ void tcApp::setup() {
     }
     star.close();
 
+    // Simplest form: 32 randomly-placed cells.
     fracture_ = voronoiFracture2D(star, 32);
+
+    // ---- Controlling the fracture --------------------------------------------
+    // For more control, build a Voronoi generator and configure it with chained
+    // setters (the object holds the settings and can be reused):
+    //
+    //   Voronoi v;
+    //   v.addSeed(impactPoint)          // place your own seed(s), e.g. a hit point
+    //    .setSeedCount(40)              // total cells; the rest are auto-filled
+    //    .setDistribution(Distribution::Uniform)  // Uniform (default) or Grid
+    //    .setRandomSeed(123);           // fix the RNG for reproducible results
+    //   fracture_ = v.fracture2D(star);
+    //
+    // Seed rules:
+    //   - addSeed/addSeeds points are always kept; setSeedCount() tops up the
+    //     remainder with the chosen Distribution (auto-generated inside the shape).
+    //   - setSeeds(points) replaces EVERYTHING and disables auto-fill — the
+    //     escape hatch when you want to control every single seed:
+    //       v.setSeeds({ {x0,y0}, {x1,y1}, ... });
+    //
+    // Result: fracture_.cells[i] has { path, seed, centroid, neighbors }.
+    //   fracture_.interfaces  : shared edges { cellA, cellB, point, normal }
+    //   fracture_.neighborsOf(i) / interfaceBetween(a, b)
+    // --------------------------------------------------------------------------
 
     int n = static_cast<int>(fracture_.cells.size());
     for (int i = 0; i < n; ++i) {
