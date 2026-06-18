@@ -317,6 +317,71 @@ Mesh toRenderMesh(const SliceMesh& sm) {
 }
 
 // -----------------------------------------------------------------------------
+// extrudePath
+// -----------------------------------------------------------------------------
+Mesh extrudePath(const Path& region, float thickness) {
+    Mesh m;
+
+    // Outer boundary polygon (first subpath), as 2D points.
+    vector<array<double, 2>> poly2d;
+    vector<Vec2> poly;
+    const vector<Vec3>& rv = region.getVertices();
+    if (region.getNumSubpaths() > 0) {
+        auto rng = region.getSubpathRange(0);
+        for (size_t i = rng.first; i < rng.second; ++i) {
+            poly.push_back(Vec2(rv[i].x, rv[i].y));
+            poly2d.push_back({static_cast<double>(rv[i].x), static_cast<double>(rv[i].y)});
+        }
+    } else {
+        for (const Vec3& v : rv) {
+            poly.push_back(Vec2(v.x, v.y));
+            poly2d.push_back({static_cast<double>(v.x), static_cast<double>(v.y)});
+        }
+    }
+    const size_t np = poly.size();
+    if (np < 3) return m;
+
+    vector<vector<array<double, 2>>> rings{poly2d};
+    vector<uint32_t> capTri = mapbox::earcut<uint32_t>(rings);
+
+    // Front cap at z=0 (normal -Z), back cap at z=thickness (normal +Z).
+    unsigned int frontBase = 0;
+    for (const Vec2& p : poly) { m.addVertex(Vec3(p.x, p.y, 0.0f)); m.addNormal(Vec3(0, 0, -1)); }
+    unsigned int backBase = static_cast<unsigned int>(m.getVertices().size());
+    for (const Vec2& p : poly) { m.addVertex(Vec3(p.x, p.y, thickness)); m.addNormal(Vec3(0, 0, 1)); }
+
+    for (size_t k = 0; k + 2 < capTri.size(); k += 3) {
+        // Front faces -Z: wind so the normal points to -Z.
+        m.addTriangle(frontBase + capTri[k], frontBase + capTri[k + 2], frontBase + capTri[k + 1]);
+        // Back faces +Z.
+        m.addTriangle(backBase + capTri[k], backBase + capTri[k + 1], backBase + capTri[k + 2]);
+    }
+
+    // Side walls: a quad per boundary edge, outward normal.
+    for (size_t i = 0; i < np; ++i) {
+        size_t j = (i + 1) % np;
+        Vec3 a0(poly[i].x, poly[i].y, 0.0f);
+        Vec3 b0(poly[j].x, poly[j].y, 0.0f);
+        Vec3 a1(poly[i].x, poly[i].y, thickness);
+        Vec3 b1(poly[j].x, poly[j].y, thickness);
+        Vec3 edge = b0 - a0;
+        Vec3 nrm = edge.cross(Vec3(0, 0, 1));  // perpendicular, in-plane
+        float len = nrm.length();
+        nrm = len > 1e-12f ? nrm * (1.0f / len) : Vec3(1, 0, 0);
+
+        unsigned int base = static_cast<unsigned int>(m.getVertices().size());
+        m.addVertex(a0); m.addNormal(nrm);
+        m.addVertex(b0); m.addNormal(nrm);
+        m.addVertex(b1); m.addNormal(nrm);
+        m.addVertex(a1); m.addNormal(nrm);
+        m.addTriangle(base, base + 1, base + 2);
+        m.addTriangle(base, base + 2, base + 3);
+    }
+
+    return m;
+}
+
+// -----------------------------------------------------------------------------
 tc::Vec3 meshCentroid(const SliceMesh& sm) {
     if (sm.verts.empty()) return Vec3(0, 0, 0);
     Vec3 sum(0, 0, 0);

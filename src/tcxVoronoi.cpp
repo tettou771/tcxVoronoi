@@ -30,18 +30,65 @@ Bounds computeBounds(const Mesh& mesh) {
     return b;
 }
 
+Vec3 projectOntoPlane(const Vec3& p, const Plane& plane) {
+    return p - plane.normal * plane.signedDistance(p);
+}
+
 } // namespace
 
 // -----------------------------------------------------------------------------
 vector<Vec3> Voronoi::resolveSeeds(const Mesh& mesh) {
-    if (explicitSeeds_) return seeds_;
-
     vector<Vec3> result = seeds_;  // explicit points come first, always kept
+
+    // With a seed plane, all seeds (explicit + generated) must be coplanar so
+    // the resulting bisector cuts are perpendicular to it (prismatic).
+    if (hasSeedPlane_) {
+        for (Vec3& p : result) p = projectOntoPlane(p, seedPlane_);
+    }
+    if (explicitSeeds_) return result;
+
     int target = max(seedCount_, static_cast<int>(result.size()));
     if (target < 1) target = 1;
 
-    Bounds b = computeBounds(mesh);
     if (hasRandomSeed_) tc::randomSeed(randomSeed_);
+
+    if (hasSeedPlane_) {
+        // Distribute generated seeds in 2D on the plane, within the mesh's
+        // projected bounds.
+        const Vec3 n = seedPlane_.normal;
+        const Vec3 origin = n * (-seedPlane_.d);
+        Vec3 u = (fabs(n.x) > 0.9f) ? Vec3(0, 1, 0) : Vec3(1, 0, 0);
+        u = (u - n * u.dot(n)).normalized();
+        Vec3 v = n.cross(u);
+
+        float smn = 0, smx = 0, tmn = 0, tmx = 0;
+        bool first = true;
+        for (const Vec3& q : mesh.getVertices()) {
+            Vec3 dq = q - origin;
+            float s = dq.dot(u), tt = dq.dot(v);
+            if (first) { smn = smx = s; tmn = tmx = tt; first = false; }
+            else {
+                smn = min(smn, s); smx = max(smx, s);
+                tmn = min(tmn, tt); tmx = max(tmx, tt);
+            }
+        }
+        auto place = [&](float s, float tt) { result.push_back(origin + u * s + v * tt); };
+
+        if (distribution_ == Distribution::Grid) {
+            int gn = max(1, static_cast<int>(ceil(sqrt(static_cast<double>(target)))));
+            float cs = (smx - smn) / gn, ct = (tmx - tmn) / gn;
+            for (int x = 0; x < gn && static_cast<int>(result.size()) < target; ++x)
+            for (int y = 0; y < gn && static_cast<int>(result.size()) < target; ++y) {
+                place(smn + (x + tc::random()) * cs, tmn + (y + tc::random()) * ct);
+            }
+        }
+        while (static_cast<int>(result.size()) < target) {
+            place(tc::random(smn, smx), tc::random(tmn, tmx));
+        }
+        return result;
+    }
+
+    Bounds b = computeBounds(mesh);
 
     if (distribution_ == Distribution::Grid) {
         // Jittered grid: roughly cube-root cells, jitter inside each cell.
@@ -172,6 +219,17 @@ FractureResult Voronoi::fracture(const Mesh& mesh) {
     }
 
     return result;
+}
+
+// -----------------------------------------------------------------------------
+FractureResult Voronoi::fractureExtruded(const Path& region, float thickness) {
+    Mesh slab = extrudePath(region, thickness);
+    // Constrain seeds to the front (Z=0) plane so the cuts run straight through
+    // the slab (prismatic). Honor an explicit setSeedPlane() if one was set.
+    if (!hasSeedPlane_) {
+        setSeedPlane(Plane::fromPointNormal(Vec3(0, 0, 0), Vec3(0, 0, 1)));
+    }
+    return fracture(slab);
 }
 
 // =============================================================================

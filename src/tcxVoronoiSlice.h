@@ -48,4 +48,9 @@ tc::Mesh toRenderMesh(const SliceMesh& sm);
 // Average of all vertices (cheap representative center).
 tc::Vec3 meshCentroid(const SliceMesh& sm);
 
+// Extrude a 2D region (a closed Path, assumed in the Z=0 plane) along +Z by
+// 'thickness', producing a closed slab mesh (front cap + back cap + side walls).
+// Used by Voronoi::fractureExtruded(). Candidate to promote to core later.
+tc::Mesh extrudePath(const tc::Path& region, float thickness);
+
 } // namespace tcx

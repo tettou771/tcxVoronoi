@@ -62,6 +62,17 @@ public:
     Voronoi& setDistribution(Distribution d) { distribution_ = d; return *this; }
     Voronoi& setRandomSeed(unsigned int s) { randomSeed_ = s; hasRandomSeed_ = true; return *this; }
 
+    // Constrain all seeds to lie on a plane. With a seed plane set, every
+    // bisector between seeds is perpendicular to that plane, so fracture(mesh)
+    // produces PRISMATIC cuts: the cells are columns extruded along the plane
+    // normal, keeping the mesh's real front/back geometry. This is the natural
+    // way to shatter glass / tiles (which are already meshes) with a 2D Voronoi
+    // pattern. Auto-generated seeds are distributed in 2D on the plane; explicit
+    // seeds are projected onto it. setDistribution() still applies (Uniform for
+    // irregular glass, Grid for regular tiles).
+    Voronoi& setSeedPlane(const Plane& plane) { seedPlane_ = plane; hasSeedPlane_ = true; return *this; }
+    Voronoi& clearSeedPlane() { hasSeedPlane_ = false; return *this; }
+
     // Replace ALL seeds with exactly these points; disables auto-fill. This is
     // the escape hatch for full manual control.
     Voronoi& setSeeds(const std::vector<tc::Vec3>& ps) {
@@ -87,6 +98,12 @@ public:
     // be concave; the outer boundary (first subpath) is used.
     FractureResult2D fracture2D(const tc::Path& region);
 
+    // Build a flat slab of the given thickness from a 2D region (extruded along
+    // +Z) and prismatically fracture it. Convenience for when you DON'T already
+    // have a mesh; if you do (glass/tile), prefer setSeedPlane() + fracture().
+    // The region is assumed to lie in the Z=0 plane.
+    FractureResult fractureExtruded(const tc::Path& region, float thickness);
+
 private:
     std::vector<tc::Vec3> resolveSeeds(const tc::Mesh& mesh);
     std::vector<tc::Vec2> resolveSeeds2D(const std::vector<tc::Vec2>& region);
@@ -97,6 +114,8 @@ private:
     unsigned int randomSeed_ = 0;
     bool hasRandomSeed_ = false;
     bool explicitSeeds_ = false;
+    Plane seedPlane_;
+    bool hasSeedPlane_ = false;
 };
 
 // -----------------------------------------------------------------------------
