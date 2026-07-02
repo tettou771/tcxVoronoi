@@ -4,7 +4,7 @@
 
 #include <vector>
 
-namespace tcx {
+namespace tcx::voronoi {
 
 // =============================================================================
 // Plane
@@ -123,4 +123,30 @@ struct FractureResult2D {
     }
 };
 
-} // namespace tcx
+} // namespace tcx::voronoi
+
+// -----------------------------------------------------------------------------
+// Backward compatibility. The canonical namespace is now `tcx::voronoi`. These
+// silent aliases keep older code compiling: flat `tcx::Plane` and legacy
+// `trussc::Plane`. DEPRECATED — removed in v1.0.0.
+// (No [[deprecated]] attribute: under the usual `using namespace tc;` it would
+//  warn on idiomatic unqualified use too. See tcxVoronoi README for migration.)
+// -----------------------------------------------------------------------------
+namespace tcx {
+    using voronoi::Plane;            // deprecated: remove at v1.0.0
+    using voronoi::VoronoiCell;      // deprecated: remove at v1.0.0
+    using voronoi::Interface;        // deprecated: remove at v1.0.0
+    using voronoi::FractureResult;   // deprecated: remove at v1.0.0
+    using voronoi::VoronoiCell2D;    // deprecated: remove at v1.0.0
+    using voronoi::Interface2D;      // deprecated: remove at v1.0.0
+    using voronoi::FractureResult2D; // deprecated: remove at v1.0.0
+}
+namespace trussc {
+    using tcx::voronoi::Plane;            // deprecated: remove at v1.0.0
+    using tcx::voronoi::VoronoiCell;      // deprecated: remove at v1.0.0
+    using tcx::voronoi::Interface;        // deprecated: remove at v1.0.0
+    using tcx::voronoi::FractureResult;   // deprecated: remove at v1.0.0
+    using tcx::voronoi::VoronoiCell2D;    // deprecated: remove at v1.0.0
+    using tcx::voronoi::Interface2D;      // deprecated: remove at v1.0.0
+    using tcx::voronoi::FractureResult2D; // deprecated: remove at v1.0.0
+}

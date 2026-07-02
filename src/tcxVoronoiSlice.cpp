@@ -13,7 +13,7 @@
 using namespace std;
 using namespace tc;
 
-namespace tcx {
+namespace tcx::voronoi {
 
 // -----------------------------------------------------------------------------
 // toSliceMesh - weld vertices by quantized position so triangles share edges.
@@ -389,4 +389,4 @@ tc::Vec3 meshCentroid(const SliceMesh& sm) {
     return sum * (1.0f / static_cast<float>(sm.verts.size()));
 }
 
-} // namespace tcx
+} // namespace tcx::voronoi

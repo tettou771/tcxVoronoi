@@ -13,7 +13,7 @@
 
 #include <vector>
 
-namespace tcx {
+namespace tcx::voronoi {
 
 // How auto-generated seeds are distributed inside the mesh bounds.
 // Poisson / Surface are planned; Uniform and Grid cover Phase 1.
@@ -136,4 +136,26 @@ inline FractureResult2D voronoiFracture2D(const tc::Path& region, int count) {
 // n points spread roughly evenly on a sphere (Fibonacci sphere).
 std::vector<tc::Vec3> seedsOnSphere(const tc::Vec3& center, float radius, int n);
 
-} // namespace tcx
+} // namespace tcx::voronoi
+
+// -----------------------------------------------------------------------------
+// Backward compatibility. The canonical namespace is now `tcx::voronoi`. These
+// silent aliases keep older code compiling: flat `tcx::Voronoi` and legacy
+// `trussc::Voronoi`. DEPRECATED — removed in v1.0.0.
+// (No [[deprecated]] attribute: under the usual `using namespace tc;` it would
+//  warn on idiomatic unqualified use too. See tcxVoronoi README for migration.)
+// -----------------------------------------------------------------------------
+namespace tcx {
+    using voronoi::Distribution;       // deprecated: remove at v1.0.0
+    using voronoi::Voronoi;            // deprecated: remove at v1.0.0
+    using voronoi::voronoiFracture;    // deprecated: remove at v1.0.0
+    using voronoi::voronoiFracture2D;  // deprecated: remove at v1.0.0
+    using voronoi::seedsOnSphere;      // deprecated: remove at v1.0.0
+}
+namespace trussc {
+    using tcx::voronoi::Distribution;       // deprecated: remove at v1.0.0
+    using tcx::voronoi::Voronoi;            // deprecated: remove at v1.0.0
+    using tcx::voronoi::voronoiFracture;    // deprecated: remove at v1.0.0
+    using tcx::voronoi::voronoiFracture2D;  // deprecated: remove at v1.0.0
+    using tcx::voronoi::seedsOnSphere;      // deprecated: remove at v1.0.0
+}

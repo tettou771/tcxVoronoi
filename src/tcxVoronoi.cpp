@@ -7,7 +7,7 @@
 using namespace std;
 using namespace tc;
 
-namespace tcx {
+namespace tcx::voronoi {
 
 namespace {
 
@@ -438,4 +438,4 @@ vector<Vec3> seedsOnSphere(const Vec3& center, float radius, int n) {
     return out;
 }
 
-} // namespace tcx
+} // namespace tcx::voronoi

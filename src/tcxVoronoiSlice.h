@@ -6,7 +6,7 @@
 
 #include <vector>
 
-namespace tcx {
+namespace tcx::voronoi {
 
 // =============================================================================
 // SliceMesh - lightweight positions-only indexed triangle mesh.
@@ -53,4 +53,28 @@ tc::Vec3 meshCentroid(const SliceMesh& sm);
 // Used by Voronoi::fractureExtruded(). Candidate to promote to core later.
 tc::Mesh extrudePath(const tc::Path& region, float thickness);
 
-} // namespace tcx
+} // namespace tcx::voronoi
+
+// -----------------------------------------------------------------------------
+// Backward compatibility. The canonical namespace is now `tcx::voronoi`. These
+// silent aliases keep older code compiling: flat `tcx::SliceMesh` and legacy
+// `trussc::SliceMesh`. DEPRECATED — removed in v1.0.0.
+// (No [[deprecated]] attribute: under the usual `using namespace tc;` it would
+//  warn on idiomatic unqualified use too. See tcxVoronoi README for migration.)
+// -----------------------------------------------------------------------------
+namespace tcx {
+    using voronoi::SliceMesh;        // deprecated: remove at v1.0.0
+    using voronoi::toSliceMesh;      // deprecated: remove at v1.0.0
+    using voronoi::sliceKeepInside;  // deprecated: remove at v1.0.0
+    using voronoi::toRenderMesh;     // deprecated: remove at v1.0.0
+    using voronoi::meshCentroid;     // deprecated: remove at v1.0.0
+    using voronoi::extrudePath;      // deprecated: remove at v1.0.0
+}
+namespace trussc {
+    using tcx::voronoi::SliceMesh;        // deprecated: remove at v1.0.0
+    using tcx::voronoi::toSliceMesh;      // deprecated: remove at v1.0.0
+    using tcx::voronoi::sliceKeepInside;  // deprecated: remove at v1.0.0
+    using tcx::voronoi::toRenderMesh;     // deprecated: remove at v1.0.0
+    using tcx::voronoi::meshCentroid;     // deprecated: remove at v1.0.0
+    using tcx::voronoi::extrudePath;      // deprecated: remove at v1.0.0
+}
