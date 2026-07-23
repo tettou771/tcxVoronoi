@@ -161,6 +161,86 @@ static void capTriangulate(SliceMesh& out,
 }
 
 // -----------------------------------------------------------------------------
+// capResidualHoles - watertightness safety net.
+//
+// earcut can fail to fully triangulate a jagged, self-touching, or otherwise
+// non-simple cross-section (common when the cut plane meets a blocky/voxel
+// surface), leaving the cell with an open cap. This closes any edge of `out`
+// that is still a boundary (used by exactly one triangle) AND lies on the cut
+// plane, by stitching the residual boundary into loop(s) and centroid-fanning
+// each -- watertight for ANY closed loop, regardless of convexity. Fan triangles
+// are oriented toward +plane.normal to match the earcut caps.
+//
+// On clean meshes earcut leaves no residual, so this finds nothing and the
+// earcut cap is used unchanged (no behaviour change for existing meshes). The
+// plane filter keeps it from touching any hole inherited from an earlier slice.
+// -----------------------------------------------------------------------------
+static void capResidualHoles(SliceMesh& out, const Plane& plane, float eps) {
+    map<pair<unsigned int, unsigned int>, int> use;
+    auto bump = [&](unsigned int a, unsigned int b) {
+        if (a == b) return;
+        use[a < b ? make_pair(a, b) : make_pair(b, a)]++;
+    };
+    for (size_t t = 0; t + 2 < out.tris.size(); t += 3) {
+        bump(out.tris[t], out.tris[t + 1]);
+        bump(out.tris[t + 1], out.tris[t + 2]);
+        bump(out.tris[t + 2], out.tris[t]);
+    }
+
+    const float tol = std::max(eps * 4.0f, 1e-4f);
+    vector<pair<unsigned int, unsigned int>> boundary;
+    for (auto& e : use) {
+        if (e.second != 1) continue;
+        if (fabs(plane.signedDistance(out.verts[e.first.first]))  <= tol &&
+            fabs(plane.signedDistance(out.verts[e.first.second])) <= tol)
+            boundary.push_back(e.first);
+    }
+    if (boundary.empty()) return;
+
+    struct HalfEdge { unsigned int to; size_t seg; };
+    unordered_map<unsigned int, vector<HalfEdge>> adj;
+    adj.reserve(boundary.size() * 2);
+    for (size_t s = 0; s < boundary.size(); ++s) {
+        adj[boundary[s].first].push_back({boundary[s].second, s});
+        adj[boundary[s].second].push_back({boundary[s].first, s});
+    }
+    vector<char> segUsed(boundary.size(), 0);
+
+    for (size_t s0 = 0; s0 < boundary.size(); ++s0) {
+        if (segUsed[s0]) continue;
+        unsigned int start = boundary[s0].first;
+        unsigned int cur = start;
+        vector<unsigned int> loop;
+        while (true) {
+            loop.push_back(cur);
+            size_t pick = numeric_limits<size_t>::max();
+            unsigned int next = 0;
+            for (const HalfEdge& he : adj[cur]) {
+                if (!segUsed[he.seg]) { pick = he.seg; next = he.to; break; }
+            }
+            if (pick == numeric_limits<size_t>::max()) break;
+            segUsed[pick] = 1;
+            cur = next;
+            if (cur == start) break;
+        }
+        if (loop.size() < 3) continue;
+
+        Vec3 ctr(0, 0, 0);
+        for (unsigned int id : loop) ctr += out.verts[id];
+        ctr = ctr * (1.0f / static_cast<float>(loop.size()));
+        unsigned int cid = static_cast<unsigned int>(out.verts.size());
+        out.verts.push_back(ctr);
+        for (size_t i = 0; i < loop.size(); ++i) {
+            unsigned int a = loop[i], b = loop[(i + 1) % loop.size()];
+            Vec3 fn = (out.verts[a] - ctr).cross(out.verts[b] - ctr);
+            out.tris.push_back(cid);
+            if (fn.dot(plane.normal) >= 0.0f) { out.tris.push_back(a); out.tris.push_back(b); }
+            else                              { out.tris.push_back(b); out.tris.push_back(a); }
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
 // sliceKeepInside
 // -----------------------------------------------------------------------------
 SliceMesh sliceKeepInside(const SliceMesh& in, const Plane& plane, float eps) {
@@ -198,39 +278,30 @@ SliceMesh sliceKeepInside(const SliceMesh& in, const Plane& plane, float eps) {
         return id;
     };
 
-    // Cut segments along the plane, collected to stitch into cap loop(s).
-    vector<pair<unsigned int, unsigned int>> cutSegs;
-
     const unsigned int* tri = in.tris.data();
     const size_t nt = in.tris.size();
+    bool anyOutside = false;
     for (size_t t = 0; t < nt; t += 3) {
         unsigned int idx[3] = {tri[t], tri[t + 1], tri[t + 2]};
 
         // Sutherland-Hodgman clip of the triangle against the half-space
-        // (keep signedDistance <= eps). Output polygon (<= 4 verts), plus the
-        // pair of cut vertices that form this triangle's cut segment.
+        // (keep signedDistance <= eps), fan-triangulating the kept polygon.
         unsigned int poly[4];
         int polyN = 0;
-        unsigned int cut[2];
-        int cutN = 0;
 
         for (int e = 0; e < 3; ++e) {
             unsigned int cur = idx[e];
             unsigned int nxt = idx[(e + 1) % 3];
             float dCur = dist[cur];
             float dNxt = dist[nxt];
+            if (dCur > eps) anyOutside = true;
             bool curIn = dCur <= eps;
-            bool nxtIn = dNxt <= eps;
 
-            if (curIn) poly[polyN++] = keepVertex(cur);
+            if (curIn && polyN < 4) poly[polyN++] = keepVertex(cur);
 
-            // Genuine crossing (strictly opposite sides beyond eps).
+            // Genuine crossing (strictly opposite sides beyond eps) -> cut vertex.
             bool crossing = (dCur > eps && dNxt < -eps) || (dCur < -eps && dNxt > eps);
-            if (crossing) {
-                unsigned int c = cutOnEdge(cur, nxt);
-                if (polyN < 4) poly[polyN++] = c;
-                if (cutN < 2) cut[cutN++] = c;
-            }
+            if (crossing && polyN < 4) poly[polyN++] = cutOnEdge(cur, nxt);
         }
 
         if (polyN >= 3) {
@@ -241,53 +312,76 @@ SliceMesh sliceKeepInside(const SliceMesh& in, const Plane& plane, float eps) {
                 out.tris.push_back(poly[k + 1]);
             }
         }
-        if (cutN == 2) {
-            cutSegs.emplace_back(cut[0], cut[1]);
+    }
+
+    if (!anyOutside) return out;  // plane removed nothing: no cut, no cap
+
+    // -------------------------------------------------------------------------
+    // Cap the cut cross-section. Because the input is a closed surface, every
+    // boundary edge of the clipped side geometry (an edge used by exactly ONE
+    // triangle) lies on the cut plane. Deriving the cap loops from those
+    // boundary edges makes the cap match the side geometry EXACTLY -> the cell
+    // is watertight by construction, even where the plane passes through
+    // existing vertices (blocky/voxel meshes leave no cut vertex there) or the
+    // cross-section is concave or non-manifold. Interior edges (shared by two
+    // kept triangles, incl. fan diagonals) are used twice and skipped.
+    // -------------------------------------------------------------------------
+    map<pair<unsigned int, unsigned int>, int> edgeUse;
+    {
+        const unsigned int* ot = out.tris.data();
+        const size_t ont = out.tris.size();
+        auto bump = [&](unsigned int a, unsigned int b) {
+            if (a == b) return;
+            edgeUse[a < b ? make_pair(a, b) : make_pair(b, a)]++;
+        };
+        for (size_t t = 0; t < ont; t += 3) {
+            bump(ot[t], ot[t + 1]); bump(ot[t + 1], ot[t + 2]); bump(ot[t + 2], ot[t]);
         }
     }
 
-    if (cutSegs.empty()) return out;  // plane did not actually cut: no cap
+    vector<pair<unsigned int, unsigned int>> boundary;
+    for (auto& e : edgeUse) if (e.second == 1) boundary.push_back(e.first);
+    if (boundary.empty()) return out;
 
-    // -------------------------------------------------------------------------
-    // Build cap(s): stitch cut segments into closed loop(s), then triangulate.
-    // -------------------------------------------------------------------------
-    unordered_map<unsigned int, vector<unsigned int>> adj;
-    for (auto& s : cutSegs) {
-        adj[s.first].push_back(s.second);
-        adj[s.second].push_back(s.first);
+    // Stitch boundary edges into closed loop(s) by CONSUMING edges (not marking
+    // vertices), so a shared vertex where two loops meet (degree > 2) splits
+    // into separate loops instead of terminating the walk and dropping a cap.
+    // Multiple disjoint loops + holes (concave cross-sections) are fine;
+    // capTriangulate classifies outer vs holes.
+    struct HalfEdge { unsigned int to; size_t seg; };
+    unordered_map<unsigned int, vector<HalfEdge>> adj;
+    adj.reserve(boundary.size() * 2);
+    for (size_t s = 0; s < boundary.size(); ++s) {
+        adj[boundary[s].first].push_back({boundary[s].second, s});
+        adj[boundary[s].second].push_back({boundary[s].first, s});
     }
+    vector<char> segUsed(boundary.size(), 0);
 
-    unordered_map<unsigned int, bool> used;
-
-    // Stitch the (degree-2) cut graph into closed loops. Multiple disjoint loops
-    // and holes are possible for concave cross-sections; capTriangulate sorts
-    // out which are outer vs holes.
     vector<vector<unsigned int>> loops;
-    for (auto& kv : adj) {
-        unsigned int start = kv.first;
-        if (used[start]) continue;
-
-        vector<unsigned int> loop;
+    for (size_t s0 = 0; s0 < boundary.size(); ++s0) {
+        if (segUsed[s0]) continue;
+        unsigned int start = boundary[s0].first;
         unsigned int cur = start;
-        unsigned int prev = numeric_limits<unsigned int>::max();
+        vector<unsigned int> loop;
         while (true) {
             loop.push_back(cur);
-            used[cur] = true;
-            unsigned int next = numeric_limits<unsigned int>::max();
-            for (unsigned int w : adj[cur]) {
-                if (w != prev) { next = w; break; }
+            size_t pick = numeric_limits<size_t>::max();
+            unsigned int next = 0;
+            for (const HalfEdge& he : adj[cur]) {
+                if (!segUsed[he.seg]) { pick = he.seg; next = he.to; break; }
             }
-            if (next == numeric_limits<unsigned int>::max()) break;
-            if (next == start) break;       // closed
-            if (used[next]) break;          // ran into an already-walked vertex
-            prev = cur;
+            if (pick == numeric_limits<size_t>::max()) break;  // open chain: stop
+            segUsed[pick] = 1;
             cur = next;
+            if (cur == start) break;                           // closed loop
         }
-
         if (loop.size() >= 3) loops.push_back(std::move(loop));
     }
 
     capTriangulate(out, loops, plane.normal);
+
+    // Close anything earcut left open on this plane (jagged/blocky cross-sections).
+    capResidualHoles(out, plane, eps);
 
     return out;
 }
